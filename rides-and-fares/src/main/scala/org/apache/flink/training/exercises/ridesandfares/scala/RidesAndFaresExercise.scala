@@ -27,6 +27,8 @@ import org.apache.flink.streaming.api.scala.{StreamExecutionEnvironment, _}
 import org.apache.flink.training.exercises.common.datatypes.{RideAndFare, TaxiFare, TaxiRide}
 import org.apache.flink.training.exercises.common.sources.{TaxiFareGenerator, TaxiRideGenerator}
 import org.apache.flink.training.exercises.common.utils.MissingSolutionException
+import org.apache.flink.api.common.state.ValueStateDescriptor
+import org.apache.flink.api.common.state.ValueState
 import org.apache.flink.util.Collector
 
 /** The Stateful Enrichment exercise from the Flink training.
@@ -44,6 +46,7 @@ object RidesAndFaresExercise {
     def execute(): JobExecutionResult = {
       val env = StreamExecutionEnvironment.getExecutionEnvironment
 
+      // rides source
       val rides = env
         .addSource(rideSource)
         .filter { ride =>
@@ -53,12 +56,14 @@ object RidesAndFaresExercise {
           ride.rideId
         }
 
+      // fares source
       val fares = env
         .addSource(fareSource)
         .keyBy { fare =>
           fare.rideId
         }
 
+      // connect rides and fares based on fare id
       rides
         .connect(fares)
         .flatMap(new EnrichmentFunction())
@@ -76,18 +81,61 @@ object RidesAndFaresExercise {
     job.execute()
   }
 
+
+  // maintain state for ride_id
+  // expected output to return: DataStream<RideAndFare> type
   class EnrichmentFunction() extends RichCoFlatMapFunction[TaxiRide, TaxiFare, RideAndFare] {
 
+    private var rideState: ValueState[RideAndFare] = _
+
     override def open(parameters: Configuration): Unit = {
-      throw new MissingSolutionException()
+      rideState = getRuntimeContext.getState(
+        new ValueStateDescriptor[RideAndFare]("ride", createTypeInformation[RideAndFare])
+      )
     }
 
     override def flatMap1(ride: TaxiRide, out: Collector[RideAndFare]): Unit = {
-      throw new MissingSolutionException()
+      val tempCurrentRide = rideState.value()
+
+      val currentRide = if (tempCurrentRide != null) {
+        tempCurrentRide
+      } else {
+        new RideAndFare(null, null)
+      }
+
+      // set whenever received, edge case is to check if already set - for idempotency
+      if (currentRide.getTaxiRide == null) {
+        currentRide.setTaxiRide(ride)
+        rideState.update(currentRide)
+      }
+
+      if (currentRide.getTaxiFare != null && currentRide.getTaxiRide != null) {
+        // collect if both values set
+        out.collect(currentRide)
+        rideState.clear()
+      }
+
     }
 
     override def flatMap2(fare: TaxiFare, out: Collector[RideAndFare]): Unit = {
-      throw new MissingSolutionException()
+      val tempCurrentRide = rideState.value()
+
+      val currentRide = if (tempCurrentRide != null) {
+        tempCurrentRide
+      } else {
+        new RideAndFare(null, null)
+      }
+
+      if (currentRide.getTaxiFare == null) {
+        currentRide.setTaxiFare(fare)
+        rideState.update(currentRide)
+      }
+
+      if (currentRide.getTaxiFare != null && currentRide.getTaxiRide != null) {
+        out.collect(currentRide)
+        rideState.clear()
+      }
+
     }
   }
 

@@ -18,6 +18,8 @@
 
 package org.apache.flink.training.exercises.common.datatypes;
 
+import org.apache.flink.training.exercises.common.sources.TaxiRideGenerator;
+
 import java.io.Serializable;
 
 /** Holds a TaxiRide and a TaxiFare. */
@@ -48,5 +50,21 @@ public class RideAndFare implements Serializable {
 
         RideAndFare otherRandF = (RideAndFare) other;
         return this.ride.equals(otherRandF.ride) && this.fare.equals(otherRandF.fare);
+    }
+
+    public TaxiRide getTaxiRide() {
+        return this.ride;
+    }
+
+    public TaxiFare getTaxiFare() {
+        return this.fare;
+    }
+
+    public void setTaxiRide(TaxiRide ride) {
+        this.ride = ride;
+    }
+
+    public void setTaxiFare(TaxiFare fare) {
+        this.fare = fare;
     }
 }
