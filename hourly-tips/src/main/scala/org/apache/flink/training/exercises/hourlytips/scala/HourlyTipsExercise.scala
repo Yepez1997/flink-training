@@ -19,12 +19,17 @@
 package org.apache.flink.training.exercises.hourlytips.scala
 
 import org.apache.flink.api.common.JobExecutionResult
+import org.apache.flink.util.Collector
+import org.apache.flink.api.common.eventtime.{SerializableTimestampAssigner, WatermarkStrategy}
 import org.apache.flink.streaming.api.functions.sink.{PrintSinkFunction, SinkFunction}
 import org.apache.flink.streaming.api.functions.source.SourceFunction
 import org.apache.flink.streaming.api.scala._
+import org.apache.flink.streaming.api.scala.function.ProcessWindowFunction
+import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows
+import org.apache.flink.streaming.api.windowing.time.Time
+import org.apache.flink.streaming.api.windowing.windows.TimeWindow
 import org.apache.flink.training.exercises.common.datatypes.TaxiFare
 import org.apache.flink.training.exercises.common.sources.TaxiFareGenerator
-import org.apache.flink.training.exercises.common.utils.MissingSolutionException
 
 /** The Hourly Tips exercise from the Flink training.
   *
@@ -40,6 +45,8 @@ object HourlyTipsExercise {
     job.execute()
   }
 
+  // Tuple3<Long, Long, Float>
+  // end of hour timestamp, driverId, totalTips
   class HourlyTipsJob(source: SourceFunction[TaxiFare], sink: SinkFunction[(Long, Long, Float)]) {
 
     /** Create and execute the ride cleansing pipeline.
@@ -49,23 +56,42 @@ object HourlyTipsExercise {
 
       val env = StreamExecutionEnvironment.getExecutionEnvironment
 
-      // start the data generator
-      val fares: DataStream[TaxiFare] = env.addSource(source)
+      // taxi fare stream in order by ts
+      val watermarkStrategy = WatermarkStrategy.forMonotonousTimestamps[TaxiFare]()
+        .withTimestampAssigner(new SerializableTimestampAssigner[TaxiFare] {
+          override def extractTimestamp(element: TaxiFare, streamRecordTimestamp: Long): Long = {
+            element.getEventTimeMillis
+          }
+        })
 
-      // replace this with your solution
-      if (true) {
-        throw new MissingSolutionException
-      }
+      // pipeline
+      env
+        .addSource(source)
+        .assignTimestampsAndWatermarks(watermarkStrategy)
+        .map((f: TaxiFare) => (f.driverId, f.tip))
+        .keyBy(_._1)
+        .window(TumblingEventTimeWindows.of(Time.hours(1)))
+        .reduce( (f1: (Long, Float), f2: (Long, Float)) => { (f1._1, f1._2 + f2._2) },
+          new WrapWithWindowInfo()
+        )
+        .windowAll(TumblingEventTimeWindows.of(Time.hours(1)))
+        .maxBy(2)
+        .addSink(sink)
 
-      // the results should be sent to the sink that was passed in
-      // (otherwise the tests won't work)
-      // you can end the pipeline with something like this:
-
-      // val hourlyMax = ...
-      // hourlyMax.addSink(sink);
-
-      // execute the pipeline and return the result
       env.execute("Hourly Tips")
+    }
+  }
+
+  class WrapWithWindowInfo() extends ProcessWindowFunction[(Long, Float), (Long, Long, Float), Long, TimeWindow] {
+    override def process(
+                          key: Long,
+                          context: Context,
+                          elements: Iterable[(Long, Float)],
+                          out: Collector[(Long, Long, Float)]
+                        ): Unit = {
+
+      val sumOfTips = elements.iterator.next()._2
+      out.collect((context.window.getEnd, key, sumOfTips))
     }
   }
 }
