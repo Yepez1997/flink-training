@@ -27,10 +27,13 @@ import org.apache.flink.streaming.api.functions.source.SourceFunction
 import org.apache.flink.streaming.api.scala.{StreamExecutionEnvironment, _}
 import org.apache.flink.training.exercises.common.datatypes.TaxiRide
 import org.apache.flink.training.exercises.common.sources.TaxiRideGenerator
-import org.apache.flink.training.exercises.common.utils.MissingSolutionException
 import org.apache.flink.util.Collector
+import org.apache.flink.api.common.typeinfo.Types
+import org.apache.flink.api.common.state.{ValueState, ValueStateDescriptor}
 
 import java.time.Duration
+import scala.concurrent.duration.DurationInt
+
 
 /** The "Long Ride Alerts" exercise.
   *
@@ -41,6 +44,11 @@ import java.time.Duration
   */
 object LongRidesExercise {
 
+  object LongRidesJob {
+    val WARNING_RIDE_DURATION: Long = (2 * 60 * 60)
+  }
+
+
   class LongRidesJob(source: SourceFunction[TaxiRide], sink: SinkFunction[Long]) {
 
     /** Creates and executes the ride cleansing pipeline.
@@ -49,10 +57,8 @@ object LongRidesExercise {
     def execute(): JobExecutionResult = {
       val env = StreamExecutionEnvironment.getExecutionEnvironment
 
-      // start the data generator
       val rides = env.addSource(source)
 
-      // the WatermarkStrategy specifies how to extract timestamps and generate watermarks
       val watermarkStrategy = WatermarkStrategy
         .forBoundedOutOfOrderness[TaxiRide](Duration.ofSeconds(60))
         .withTimestampAssigner(new SerializableTimestampAssigner[TaxiRide] {
@@ -60,14 +66,12 @@ object LongRidesExercise {
             ride.getEventTimeMillis
         })
 
-      // create the pipeline
       rides
         .assignTimestampsAndWatermarks(watermarkStrategy)
         .keyBy(_.rideId)
         .process(new AlertFunction())
         .addSink(sink)
 
-      // execute the pipeline and return the result
       env.execute("Long Taxi Rides")
     }
 
@@ -82,22 +86,56 @@ object LongRidesExercise {
 
   class AlertFunction extends KeyedProcessFunction[Long, TaxiRide, Long] {
 
+    @transient private var rideState: ValueState[TaxiRide] = _
+
     override def open(parameters: Configuration): Unit = {
-      throw new MissingSolutionException()
+      rideState = getRuntimeContext.getState(
+        new ValueStateDescriptor[TaxiRide]("ride event", classOf[TaxiRide])
+      )
     }
 
     override def processElement(
-        ride: TaxiRide,
-        context: KeyedProcessFunction[Long, TaxiRide, Long]#Context,
-        out: Collector[Long]
-    ): Unit = {}
+                                 ride: TaxiRide,
+                                 context: KeyedProcessFunction[Long, TaxiRide, Long]#Context,
+                                 out: Collector[Long]
+                               ): Unit = {
+      val someRideEvent: Option[TaxiRide]  = Option(rideState.value)
+      someRideEvent match {
+        case Some(currentRide) => {
+          if (ride.isStart && isRideTooLong(ride, currentRide)) {
+              out.collect(ride.rideId)
+          }
+          else { // end
+            context.timerService.deleteEventTimeTimer(getTimerTime(currentRide))
+            if (isRideTooLong(currentRide, ride)) {
+              out.collect(ride.rideId)
+            }
+            rideState.clear()
+          }
+        }
+        case None =>
+          rideState.update(ride)
+          if (ride.isStart) {
+            context.timerService.registerEventTimeTimer(getTimerTime(ride))
+          }
+      }
+    }
 
     override def onTimer(
-        timestamp: Long,
-        ctx: KeyedProcessFunction[Long, TaxiRide, Long]#OnTimerContext,
-        out: Collector[Long]
-    ): Unit = {}
+                          timestamp: Long,
+                          ctx: KeyedProcessFunction[Long, TaxiRide, Long]#OnTimerContext,
+                          out: Collector[Long]
+                        ): Unit = {
+      out.collect(rideState.value().rideId)
+      rideState.clear()
+    }
 
+    private def isRideTooLong(startEvent: TaxiRide, endEvent: TaxiRide) =
+      Duration
+        .between(startEvent.eventTime, endEvent.eventTime)
+        .compareTo(Duration.ofHours(2)) > 0
+
+    private def getTimerTime(ride: TaxiRide) = ride.eventTime.toEpochMilli + 2.hours.toMillis
   }
 
 }
