@@ -26,7 +26,6 @@ import org.apache.flink.streaming.api.functions.source.SourceFunction
 import org.apache.flink.streaming.api.scala.{StreamExecutionEnvironment, _}
 import org.apache.flink.training.exercises.common.datatypes.{RideAndFare, TaxiFare, TaxiRide}
 import org.apache.flink.training.exercises.common.sources.{TaxiFareGenerator, TaxiRideGenerator}
-import org.apache.flink.training.exercises.common.utils.MissingSolutionException
 import org.apache.flink.api.common.state.ValueStateDescriptor
 import org.apache.flink.api.common.state.ValueState
 import org.apache.flink.util.Collector
@@ -66,7 +65,7 @@ object RidesAndFaresExercise {
       // connect rides and fares based on fare id
       rides
         .connect(fares)
-        .flatMap(new EnrichmentFunction())
+        .flatMap(new EnrichmentSolutionFunction())
         .addSink(sink)
 
       env.execute()
@@ -81,9 +80,51 @@ object RidesAndFaresExercise {
     job.execute()
   }
 
+  // RichCoFlatMapFunction may be time independent, in this case either ride state
+  // or fare state can come in any order, but both events must exists before outputting.
+  class EnrichmentSolutionFunction() extends RichCoFlatMapFunction[TaxiRide, TaxiFare, RideAndFare] {
 
-  // maintain state for ride_id
-  // expected output to return: DataStream<RideAndFare> type
+    @transient private var rideState: ValueState[TaxiRide] = _
+    @transient private var fareState: ValueState[TaxiFare] = _
+
+    // open and setup state
+    override def open(parameters: Configuration): Unit = {
+      rideState = getRuntimeContext.getState(
+        new ValueStateDescriptor[TaxiRide]("saved ride", classOf[TaxiRide])
+      )
+      fareState = getRuntimeContext.getState(
+        new ValueStateDescriptor[TaxiFare]("saved fare", classOf[TaxiFare])
+      )
+    }
+
+    // first input event
+    override def flatMap1(ride: TaxiRide, out: Collector[RideAndFare]): Unit = {
+      val fare = Option(fareState.value)
+      fare match {
+        case Some(f) => {
+          fareState.clear()
+          out.collect(new RideAndFare(ride, f))
+        }
+        case None =>
+          rideState.update(ride)
+      }
+    }
+
+    // second input event
+    override def flatMap2(fare: TaxiFare, out: Collector[RideAndFare]): Unit = {
+      val ride = Option(rideState.value)
+      ride match {
+        case Some(r) => {
+          rideState.clear()
+          out.collect(new RideAndFare(r, fare))
+        }
+        case None =>
+          fareState.update(fare)
+      }
+    }
+  }
+
+
   class EnrichmentFunction() extends RichCoFlatMapFunction[TaxiRide, TaxiFare, RideAndFare] {
 
     private var rideState: ValueState[RideAndFare] = _
@@ -138,5 +179,7 @@ object RidesAndFaresExercise {
 
     }
   }
+
+
 
 }

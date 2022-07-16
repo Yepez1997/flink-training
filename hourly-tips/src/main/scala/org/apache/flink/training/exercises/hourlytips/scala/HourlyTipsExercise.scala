@@ -69,12 +69,12 @@ object HourlyTipsExercise {
         .addSource(source)
         .assignTimestampsAndWatermarks(watermarkStrategy)
         .map((f: TaxiFare) => (f.driverId, f.tip))
-        .keyBy(_._1)
-        .window(TumblingEventTimeWindows.of(Time.hours(1)))
+        .keyBy(_._1) // key by driverId
+        .window(TumblingEventTimeWindows.of(Time.hours(1))) // use window for specific key'd function
         .reduce( (f1: (Long, Float), f2: (Long, Float)) => { (f1._1, f1._2 + f2._2) },
           new WrapWithWindowInfo()
         )
-        .windowAll(TumblingEventTimeWindows.of(Time.hours(1)))
+        .windowAll(TumblingEventTimeWindows.of(Time.hours(1))) // combine all windows
         .maxBy(2)
         .addSink(sink)
 
